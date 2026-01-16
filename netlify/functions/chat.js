@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
+// Supabase setup (Samparka)
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
 const getGroqKeys = () => {
@@ -7,6 +8,7 @@ const getGroqKeys = () => {
 };
 
 export const handler = async (event) => {
+    // CORS Handling
     if (event.httpMethod === "OPTIONS") {
         return { statusCode: 200, headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Content-Type", "Access-Control-Allow-Methods": "POST" }, body: "OK" };
     }
@@ -14,7 +16,7 @@ export const handler = async (event) => {
     try {
         const { client_id, session_id, message } = JSON.parse(event.body);
 
-        // 1. ව්‍යාපාරික විස්තර සහ දැනුම ලබා ගැනීම
+        // Fetch Client and Knowledge base
         const [clientRes, productsRes] = await Promise.all([
             supabase.from('clients').select('*').eq('id', client_id).single(),
             supabase.from('products').select('*').eq('client_id', client_id)
@@ -28,50 +30,50 @@ export const handler = async (event) => {
             return { statusCode: 200, headers: { "Access-Control-Allow-Origin": "*" }, body: JSON.stringify({ reply: "Service is currently offline." }) };
         }
 
-        // 2. දැනුම් පද්ධතිය (Product/Service Knowledge)
-        const knowledgeBase = products.map(p => `NAME: ${p.name}\nPRICE: ${currency} ${p.price}\nDETAILS: ${p.description || 'N/A'}`).join('\n\n');
+        // Build Knowledge Base String
+        const knowledge = products.map(p => `ITEM: ${p.name}\nPRICE: ${currency} ${p.price}\nDETAILS: ${p.description || 'Ask for more info'}`).join('\n\n');
         
-        // 3. UNIVERSAL SYSTEM PROMPT (ඕනෑම ව්‍යාපාරයකට පොදු නීති)
+        // UNIVERSAL SYSTEM PROMPT (Strict identity lock)
         const systemPrompt = `
         CORE IDENTITY:
-        - You are ${client.ai_name}, a helpful human staff member of "${client.name}".
-        - Act according to the specific nature of ${client.name}.
+        - You are ${client.ai_name}, a friendly human staff member of "${client.name}".
+        - Strictly follow the professional nature of ${client.name}.
         
-        STRICT LIMITATIONS (DO NOT BREAK THESE):
-        1. NO AI MENTION: Never say you are an AI, a language model, or "ChatGPT". If asked who you are, say "I am ${client.ai_name} from ${client.name}."
-        2. NO TABLES: Never use Markdown tables (|---|). If listing items, use bullet points (●) or a simple list.
-        3. NO THIRD-PARTY BRANDING: Do not mention "Powered by Questra", "OpenAI", or any other platforms.
-        4. FIRST GREETING: If the user says "Hi" or "Hello", just welcome them warmly. DO NOT talk about products or prices until they ask.
-        5. CURRENCY: Always use "${currency}" for money.
+        STRICT RULES:
+        1. NEVER mention you are an AI, language model, or "ChatGPT". If asked, say "I am ${client.ai_name} from ${client.name}."
+        2. NO MARKDOWN TABLES. Use clear bullet points (●) for lists.
+        3. NO THIRD-PARTY BRANDING: Never say "Powered by Questra" or "OpenAI".
+        4. FIRST GREETING: If user says "Hi" or "Hello", welcome them warmly. DO NOT talk about prices or selling immediately. Ask how you can help.
+        5. CURRENCY: Strictly use "${currency}" for all money values.
         
-        KNOWLEDGE BASE (ONLY use information from here):
-        ${knowledgeBase}
+        KNOWLEDGE BASE (Our Products/Services):
+        ${knowledge}
         
         BUSINESS GUIDELINES:
-        ${client.instructions || 'Provide polite and professional support.'}
+        ${client.instructions || 'Be helpful and professional.'}
         
         TONE: 
-        Professional, friendly, and eager to help. Be concise.`;
+        Warm, supportive, and natural. Do not be pushy or robotic.`;
 
-        // 4. චැට් මතකය ලබා ගැනීම (Context)
+        // Context Memory
         const { data: history } = await supabase.from('conversations').select('role, content').eq('session_id', session_id).order('created_at', { ascending: false }).limit(6);
         const formattedHistory = (history || []).reverse().map(h => ({ role: h.role, content: h.content }));
 
-        // 5. AI API Call (Groq)
+        // AI Request
         const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
             method: 'POST',
             headers: { 'Authorization': `Bearer ${getGroqKeys()[0]}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 model: "openai/gpt-oss-20b",
                 messages: [{ role: "system", content: systemPrompt }, ...formattedHistory, { role: "user", content: message }],
-                temperature: 0.4 // වඩාත් ස්ථාවර පිළිතුරු සඳහා
+                temperature: 0.5
             })
         });
 
         const aiData = await groqResponse.json();
-        const botReply = aiData.choices?.[0]?.message?.content || "How can I help you?";
+        const botReply = aiData.choices?.[0]?.message?.content || "I'm here to help, please ask me anything.";
 
-        // 6. චැට් එක සේව් කිරීම
+        // Save Conversation
         await supabase.from('conversations').insert([
             { client_id, session_id, role: 'user', content: message },
             { client_id, session_id, role: 'assistant', content: botReply }
