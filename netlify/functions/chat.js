@@ -1,22 +1,29 @@
 import { createClient } from '@supabase/supabase-js';
 
-// Supabase setup (Samparka)
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
 const getGroqKeys = () => {
     return Object.keys(process.env).filter(k => k.startsWith('GROQ_KEY_')).map(k => process.env[k]);
 };
 
+// Telegram වෙත පණිවිඩ යැවීමේ Function එක
+async function sendTelegram(botToken, chatId, text) {
+    if (!botToken || !chatId) return;
+    try {
+        await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: chatId, text: text, parse_mode: 'Markdown' })
+        });
+    } catch (e) { console.error("Telegram Error:", e); }
+}
+
 export const handler = async (event) => {
-    // CORS Handling
-    if (event.httpMethod === "OPTIONS") {
-        return { statusCode: 200, headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Content-Type", "Access-Control-Allow-Methods": "POST" }, body: "OK" };
-    }
+    if (event.httpMethod === "OPTIONS") return { statusCode: 200, headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Content-Type", "Access-Control-Allow-Methods": "POST" }, body: "OK" };
 
     try {
         const { client_id, session_id, message } = JSON.parse(event.body);
 
-        // Fetch Client and Knowledge base
         const [clientRes, productsRes] = await Promise.all([
             supabase.from('clients').select('*').eq('id', client_id).single(),
             supabase.from('products').select('*').eq('client_id', client_id)
@@ -26,62 +33,65 @@ export const handler = async (event) => {
         const products = productsRes.data || [];
         const currency = client.currency || 'LKR';
 
-        if (!client || client.status !== 'active') {
-            return { statusCode: 200, headers: { "Access-Control-Allow-Origin": "*" }, body: JSON.stringify({ reply: "Service is currently offline." }) };
-        }
+        if (!client || client.status !== 'active') return { statusCode: 200, headers: { "Access-Control-Allow-Origin": "*" }, body: JSON.stringify({ reply: "Service offline." }) };
 
-        // Build Knowledge Base String
-        const knowledge = products.map(p => `ITEM: ${p.name}\nPRICE: ${currency} ${p.price}\nDETAILS: ${p.description || 'Ask for more info'}`).join('\n\n');
+        const knowledge = products.map(p => `ITEM: ${p.name}\nPRICE: ${currency} ${p.price}\nDETAILS: ${p.description}`).join('\n\n');
         
-        // UNIVERSAL SYSTEM PROMPT (Strict identity lock)
+        // AI එකට ඇණවුම් ලබාගැනීම පිළිබඳ විශේෂ උපදෙස් (Universal Prompt)
         const systemPrompt = `
-        CORE IDENTITY:
-        - You are ${client.ai_name}, a friendly human staff member of "${client.name}".
-        - Strictly follow the professional nature of ${client.name}.
+        You are ${client.ai_name}, a real human staff member of "${client.name}".
         
-        STRICT RULES:
-        1. NEVER mention you are an AI, language model, or "ChatGPT". If asked, say "I am ${client.ai_name} from ${client.name}."
-        2. NO MARKDOWN TABLES. Use clear bullet points (●) for lists.
-        3. NO THIRD-PARTY BRANDING: Never say "Powered by Questra" or "OpenAI".
-        4. FIRST GREETING: If user says "Hi" or "Hello", welcome them warmly. DO NOT talk about prices or selling immediately. Ask how you can help.
-        5. CURRENCY: Strictly use "${currency}" for all money values.
+        ORDERING PROCESS:
+        - When a customer wants to buy something, ask for their: 1. Full Name, 2. Phone Number, 3. Delivery Address.
+        - Once they provide ALL details, summarize the order and strictly include the phrase "ORDER_CONFIRMED" in your response. 
+        - DO NOT ask for payment receipts. Tell them: "Your order has been recorded. Our team will contact you shortly for confirmation and delivery."
         
-        KNOWLEDGE BASE (Our Products/Services):
+        IDENTITY RULES:
+        - NEVER say you are an AI or ChatGPT. 
+        - Use bullet points (●) for lists. No tables.
+        - Tone: Warm and professional.
+        - Currency: Strictly use "${currency}".
+        
+        KNOWLEDGE:
         ${knowledge}
         
-        BUSINESS GUIDELINES:
-        ${client.instructions || 'Be helpful and professional.'}
-        
-        TONE: 
-        Warm, supportive, and natural. Do not be pushy or robotic.`;
+        GUIDELINES:
+        ${client.instructions || 'Be helpful.'}`;
 
-        // Context Memory
-        const { data: history } = await supabase.from('conversations').select('role, content').eq('session_id', session_id).order('created_at', { ascending: false }).limit(6);
+        const { data: history } = await supabase.from('conversations').select('role, content').eq('session_id', session_id).order('created_at', { ascending: false }).limit(8);
         const formattedHistory = (history || []).reverse().map(h => ({ role: h.role, content: h.content }));
 
-        // AI Request
         const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
             method: 'POST',
             headers: { 'Authorization': `Bearer ${getGroqKeys()[0]}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 model: "openai/gpt-oss-20b",
                 messages: [{ role: "system", content: systemPrompt }, ...formattedHistory, { role: "user", content: message }],
-                temperature: 0.5
+                temperature: 0.4
             })
         });
 
         const aiData = await groqResponse.json();
-        const botReply = aiData.choices?.[0]?.message?.content || "I'm here to help, please ask me anything.";
+        let botReply = aiData.choices?.[0]?.message?.content || "How can I help you?";
 
-        // Save Conversation
-        await supabase.from('conversations').insert([
-            { client_id, session_id, role: 'user', content: message },
-            { client_id, session_id, role: 'assistant', content: botReply }
-        ]);
+        // ඇණවුම තහවුරු වී ඇත්නම් එය Database එකට සහ Telegram එකට යැවීම
+        if (botReply.includes("ORDER_CONFIRMED")) {
+            botReply = botReply.replace("ORDER_CONFIRMED", "").trim();
+            
+            // Database එකට ඇණවුම ඇතුළත් කිරීම (සරලව)
+            await supabase.from('orders').insert([{
+                client_id,
+                customer_name: "Chat Customer", 
+                order_details: message + " (Recorded via Chat Session: " + session_id + ")"
+            }]);
+
+            // Telegram Alert යැවීම
+            const alertText = `🔔 *New Order Received!*\n\n*Business:* ${client.name}\n*Session:* ${session_id}\n\n*Customer Context:*\n${message}\n\n_Please check your dashboard for full conversation details._`;
+            await sendTelegram(process.env.TELEGRAM_BOT_TOKEN, client.telegram_id, alertText);
+        }
+
+        await supabase.from('conversations').insert([{ client_id, session_id, role: 'user', content: message }, { client_id, session_id, role: 'assistant', content: botReply }]);
 
         return { statusCode: 200, headers: { "Access-Control-Allow-Origin": "*" }, body: JSON.stringify({ reply: botReply }) };
-
-    } catch (error) {
-        return { statusCode: 500, headers: { "Access-Control-Allow-Origin": "*" }, body: JSON.stringify({ error: error.message }) };
-    }
+    } catch (error) { return { statusCode: 500, headers: { "Access-Control-Allow-Origin": "*" }, body: JSON.stringify({ error: error.message }) }; }
 };
