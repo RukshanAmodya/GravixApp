@@ -1,18 +1,21 @@
 import { createClient } from '@supabase/supabase-js';
 
-// --- CONFIGURATION ---
+// --- CONFIGURATION (Samsiddhigollisu) ---
+// Supabase connection mattu authentication set-up
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
+// Chavee badalavane (Key Rotation) logic - GROQ API keys balasuva thara
 const getGroqKeys = () => {
     return Object.keys(process.env)
         .filter(key => key.startsWith('GROQ_KEY_'))
         .map(key => process.env[key]);
 };
 
+// Telegram Bot Token environment variable inda tharuvudu
 const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 
 export const handler = async (event) => {
-    // 1. CORS Preflight Handling
+    // CORS Preflight Handling (CORS parikshe mattu anumathi)
     if (event.httpMethod === "OPTIONS") {
         return {
             statusCode: 200,
@@ -25,14 +28,20 @@ export const handler = async (event) => {
         };
     }
 
+    // Kevala POST requests ge mathra anumathi ide
     if (event.httpMethod !== "POST") {
-        return { statusCode: 405, body: "Method Not Allowed" };
+        return { 
+            statusCode: 405, 
+            headers: { "Access-Control-Allow-Origin": "*" },
+            body: JSON.stringify({ error: "Method Not Allowed" }) 
+        };
     }
 
     try {
-        const { client_id, session_id, message } = JSON.parse(event.body);
+        const body = JSON.parse(event.body);
+        const { client_id, type } = body;
 
-        // 2. Client Check
+        // Client authentication parikshe
         const { data: client, error: clientErr } = await supabase
             .from('clients').select('*').eq('id', client_id).single();
 
@@ -40,82 +49,94 @@ export const handler = async (event) => {
             return {
                 statusCode: 200,
                 headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-                body: JSON.stringify({ reply: "සේවාව තාවකාලිකව අත්හිටුවා ඇත." })
+                body: JSON.stringify({ error: "Unauthorized or Inactive Client" })
             };
         }
 
-        // 3. Key Rotation
-        const keys = getGroqKeys();
-        const currentKey = keys[Math.floor(Math.random() * keys.length)];
+        // --- MODULE: AI CHAT ---
+        if (type === "chat") {
+            const { session_id, message } = body;
+            const keys = getGroqKeys();
+            const currentKey = keys[Math.floor(Math.random() * keys.length)];
 
-        // 4. History (Context)
-        const { data: history } = await supabase
-            .from('conversations').select('role, content')
-            .eq('session_id', session_id).order('created_at', { ascending: false }).limit(4);
-        const formattedHistory = history ? history.reverse().map(h => ({ role: h.role, content: h.content })) : [];
+            // Conversation history tharuvudu (Context persistence)
+            const { data: history } = await supabase
+                .from('conversations').select('role, content')
+                .eq('session_id', session_id).order('created_at', { ascending: false }).limit(4);
+            const formattedHistory = history ? history.reverse().map(h => ({ role: h.role, content: h.content })) : [];
 
-        // 5. Groq AI Call
-        const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${currentKey}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                model: "llama-3.3-70b-versatile",
-                messages: [
-                    { role: "system", content: `You are Ria, AI assistant for ${client.name}. Help customers in Sinhala/English.` },
-                    ...formattedHistory,
-                    { role: "user", content: message }
-                ],
-                temperature: 0.7
-            })
-        });
+            // AI API Call (Groq)
+            const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${currentKey}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    model: "llama-3.3-70b-versatile",
+                    messages: [
+                        { role: "system", content: `You are Ria, AI assistant for ${client.name}. Provide concise English answers.` },
+                        ...formattedHistory,
+                        { role: "user", content: message }
+                    ],
+                    temperature: 0.7
+                })
+            });
 
-        const aiData = await groqResponse.json();
-        const botReply = aiData.choices[0].message.content;
+            const aiData = await groqResponse.json();
+            const botReply = aiData.choices?.[0]?.message?.content || "API Error: No response from AI.";
 
-        // 6. DB Updates
-        await Promise.all([
-            supabase.from('conversations').insert([
-                { client_id, session_id, role: 'user', content: message },
-                { client_id, session_id, role: 'assistant', content: botReply }
-            ]),
-            supabase.rpc('increment_usage', { cid: client_id })
-        ]);
+            // Database update (Conversation logs)
+            await Promise.all([
+                supabase.from('conversations').insert([
+                    { client_id, session_id, role: 'user', content: message },
+                    { client_id, session_id, role: 'assistant', content: botReply }
+                ]),
+                supabase.rpc('increment_usage', { cid: client_id })
+            ]);
 
-        // 7. Telegram Alert Logic (Improved)
-        const orderKeywords = ["order", "ගන්න", "මිල", "කීයද", "ඇණවුම", "price"];
-        const isLead = orderKeywords.some(kw => message.toLowerCase().includes(kw));
+            return {
+                statusCode: 200,
+                headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+                body: JSON.stringify({ reply: botReply }),
+            };
+        }
 
-        if (isLead && client.telegram_chat_id && TG_TOKEN) {
-            try {
-                await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+        // --- MODULE: NOTIFICATIONS (Telegram) ---
+        if (type === "notify") {
+            const { notification_text } = body;
+
+            if (client.telegram_chat_id && TG_TOKEN) {
+                const tgRes = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         chat_id: client.telegram_chat_id,
-                        text: `🔔 *New Order Lead!*\n\n*Business:* ${client.name}\n*User:* ${message}\n\n*AI Reply:* ${botReply}`,
+                        text: notification_text,
                         parse_mode: 'Markdown'
                     })
                 });
-            } catch (tgErr) {
-                console.error("Telegram API Error:", tgErr.message);
+                
+                const tgData = await tgRes.json();
+                return {
+                    statusCode: 200,
+                    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+                    body: JSON.stringify({ success: tgData.ok }),
+                };
             }
         }
 
         return {
-            statusCode: 200,
+            statusCode: 400,
             headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-            body: JSON.stringify({ reply: botReply }),
+            body: JSON.stringify({ error: "Invalid Request Type" }),
         };
 
     } catch (error) {
-        console.error("Critical Error:", error.message);
         return {
-            statusCode: 200,
+            statusCode: 500,
             headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-            body: JSON.stringify({ reply: "පද්ධතියේ දෝෂයක්.", debug: error.message }),
+            body: JSON.stringify({ error: "Server Error", details: error.message }),
         };
     }
 };
