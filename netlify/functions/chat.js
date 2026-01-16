@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-// Supabase සම්බන්ධතාවය
+// Supabase Connection
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
 const getGroqKeys = () => {
@@ -9,113 +9,97 @@ const getGroqKeys = () => {
         .map(key => process.env[key]);
 };
 
-const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-
 export const handler = async (event) => {
-    // 1. CORS Preflight
+    // CORS Preflight
     if (event.httpMethod === "OPTIONS") {
-        return {
-            statusCode: 200,
-            headers: {
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Headers": "Content-Type, Authorization",
-                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-            },
-            body: "OK",
-        };
-    }
-
-    if (event.httpMethod !== "POST") {
-        return { statusCode: 405, headers: { "Access-Control-Allow-Origin": "*" }, body: JSON.stringify({ error: "Method Not Allowed" }) };
+        return { statusCode: 200, headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Content-Type", "Access-Control-Allow-Methods": "POST" }, body: "OK" };
     }
 
     try {
         const body = JSON.parse(event.body);
-        const { client_id, type, session_id, message, model: requestedModel } = body;
+        const { client_id, session_id, message } = body;
 
-        // 2. Database එකෙන් Agent ගේ නම සහ උපදෙස් ලබාගැනීම
-        const { data: client, error: clientErr } = await supabase
-            .from('clients').select('*').eq('id', client_id).single();
+        // 1. Client සහ ඒට අදාළ Products විස්තර ලබාගැනීම
+        const [clientRes, productsRes] = await Promise.all([
+            supabase.from('clients').select('*').eq('id', client_id).single(),
+            supabase.from('products').select('*').eq('client_id', client_id)
+        ]);
 
-        if (clientErr || !client || client.status !== 'active') {
-            return {
-                statusCode: 200,
-                headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-                body: JSON.stringify({ reply: "Service currently unavailable or locked." })
-            };
+        const client = clientRes.data;
+        const products = productsRes.data || [];
+
+        if (!client || client.status !== 'active') {
+            return { statusCode: 200, headers: { "Access-Control-Allow-Origin": "*" }, body: JSON.stringify({ reply: "Service locked." }) };
         }
 
-        if (type === "chat") {
-            const keys = getGroqKeys();
-            const currentKey = keys[Math.floor(Math.random() * keys.length)];
-            let aiModel = requestedModel === "qgent-pro" ? "openai/gpt-oss-120b" : "openai/gpt-oss-20b";
+        // 2. AI Persona සැකසීම (මෘදු සහ සහාය දක්වන ආකාරයට)
+        const productsList = products.map(p => `- ${p.name}: Rs. ${p.price} (${p.description || 'No specific details'})`).join('\n');
+        
+        const systemPrompt = `
+        You are ${client.ai_name || 'Assistant'}, a helpful brand ambassador for ${client.name}.
+        
+        IDENTITY RULES:
+        - NEVER say you are an AI, ChatGPT, or OpenAI. 
+        - Act like a human staff member. 
+        - DO NOT mention "Powered by Questra" or any platform names.
+        
+        BEHAVIOR RULES:
+        - Your first priority is to be warm, welcoming, and helpful. 
+        - DO NOT push for sales or mention prices in the first greeting unless explicitly asked.
+        - If a user says "Hi", just welcome them kindly and ask how you can help.
+        - Speak like a friendly support agent, not a pushy salesman.
+        
+        KNOWLEDGE BASE:
+        - Business Name: ${client.name}
+        - Persona Instructions: ${client.instructions || 'Be very polite.'}
+        - Available Products & Details:
+        ${productsList}
+        
+        - If a user asks about how a product is made or its details, use the descriptions provided in the list above to explain. 
+        - If information is missing, be creative but stay professional.
+        
+        TONE: Warm, helpful. Avoid robotic answers.`;
 
-            // 3. AI එකේ Identity එක මෙතැනදී තදින්ම Lock කරනවා
-            const aiName = client.ai_name || "Ria";
-            const bizName = client.name || "Questra Partner";
-            const bizInstructions = client.instructions || "Help customers professionally.";
+        // 3. Conversation History
+        const { data: history } = await supabase
+            .from('conversations').select('role, content')
+            .eq('session_id', session_id).order('created_at', { ascending: false }).limit(6);
+        const formattedHistory = history ? history.reverse().map(h => ({ role: h.role, content: h.content })) : [];
 
-            const finalSystemPrompt = `
-            STRICT IDENTITY RULE: 
-            You are ${aiName}, the official AI assistant representing ${bizName}. 
-            
-            1. NEVER mention you are an AI from OpenAI, ChatGPT, or a large language model.
-            2. If someone asks "Who are you?", strictly reply: "I am ${aiName} from ${bizName}."
-            3. Use these business rules for all answers: ${bizInstructions}
-            4. Keep your tone friendly and always stay in character.
-            5. Always mention "Powered by Questra OS" at the very end of your final response part.`;
+        // 4. AI API Call
+        const keys = getGroqKeys();
+        const currentKey = keys[Math.floor(Math.random() * keys.length)];
 
-            // Chat History (Context)
-            const { data: history } = await supabase
-                .from('conversations').select('role, content')
-                .eq('session_id', session_id).order('created_at', { ascending: false }).limit(4);
-            const formattedHistory = history ? history.reverse().map(h => ({ role: h.role, content: h.content })) : [];
+        const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${currentKey}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                model: "openai/gpt-oss-20b",
+                messages: [
+                    { role: "system", content: systemPrompt },
+                    ...formattedHistory,
+                    { role: "user", content: message }
+                ],
+                temperature: 0.6 // වැඩිපුර නිර්මාණශීලී වීමට
+            })
+        });
 
-            // AI API Call
-            const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-                method: 'POST',
-                headers: { 'Authorization': `Bearer ${currentKey}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    model: aiModel,
-                    messages: [
-                        { role: "system", content: finalSystemPrompt },
-                        ...formattedHistory,
-                        { role: "user", content: message }
-                    ],
-                    temperature: 0.7
-                })
-            });
+        const aiData = await groqResponse.json();
+        const botReply = aiData.choices?.[0]?.message?.content || "I'm here to help, what can I do for you?";
 
-            const aiData = await groqResponse.json();
-            const botReply = aiData.choices?.[0]?.message?.content || "I am having trouble processing that right now.";
+        // 5. Save logs
+        await supabase.from('conversations').insert([
+            { client_id, session_id, role: 'user', content: message },
+            { client_id, session_id, role: 'assistant', content: botReply }
+        ]);
 
-            // Save conversation & Increment usage
-            await Promise.all([
-                supabase.from('conversations').insert([{ client_id, session_id, role: 'user', content: message }, { client_id, session_id, role: 'assistant', content: botReply }]),
-                supabase.rpc('increment_usage', { cid: client_id })
-            ]);
-
-            return {
-                statusCode: 200,
-                headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-                body: JSON.stringify({ reply: botReply }),
-            };
-        }
-
-        // Notify module
-        if (type === "notify") {
-            const { notification_text } = body;
-            if (client.telegram_chat_id && TG_TOKEN) {
-                await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ chat_id: client.telegram_chat_id, text: notification_text, parse_mode: 'Markdown' })
-                });
-                return { statusCode: 200, headers: { "Access-Control-Allow-Origin": "*" }, body: JSON.stringify({ success: true }) };
-            }
-        }
+        return {
+            statusCode: 200,
+            headers: { "Access-Control-Allow-Origin": "*" },
+            body: JSON.stringify({ reply: botReply }),
+        };
 
     } catch (error) {
-        return { statusCode: 500, headers: { "Access-Control-Allow-Origin": "*" }, body: JSON.stringify({ error: "Server Error" }) };
+        return { statusCode: 500, headers: { "Access-Control-Allow-Origin": "*" }, body: JSON.stringify({ error: error.message }) };
     }
 };
