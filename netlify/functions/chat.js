@@ -1,10 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
-import axios from 'axios';
 
-// Netlify Function Handler
 export const handler = async (event) => {
-    
-    // 1. CORS Preflight (OPTIONS Request) හැසිරවීම
+    // 1. CORS Preflight Handling
     if (event.httpMethod === "OPTIONS") {
         return {
             statusCode: 200,
@@ -27,18 +24,15 @@ export const handler = async (event) => {
         // Supabase Init
         const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
-        // 2. Client පරීක්ෂාව
+        // 2. Client Check
         const { data: client, error: clientErr } = await supabase
-            .from('clients')
-            .select('*')
-            .eq('id', client_id)
-            .single();
+            .from('clients').select('*').eq('id', client_id).single();
 
         if (clientErr || !client || client.status !== 'active') {
             return {
                 statusCode: 200,
                 headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-                body: JSON.stringify({ reply: "ඔබේ සේවාව තාවකාලිකව අත්හිටුවා ඇත. කරුණාකර අප හා සම්බන්ධ වන්න." })
+                body: JSON.stringify({ reply: "සේවාව තාවකාලිකව අත්හිටුවා ඇත." })
             };
         }
 
@@ -46,35 +40,36 @@ export const handler = async (event) => {
         const keys = Object.keys(process.env)
             .filter(k => k.startsWith('GROQ_KEY_'))
             .map(k => process.env[k]);
-        
         const currentKey = keys[Math.floor(Math.random() * keys.length)];
 
-        // 4. History (Context) ලබාගැනීම
+        // 4. History
         const { data: history } = await supabase
-            .from('conversations')
-            .select('role, content')
-            .eq('session_id', session_id)
-            .order('created_at', { ascending: false })
-            .limit(4);
-
+            .from('conversations').select('role, content')
+            .eq('session_id', session_id).order('created_at', { ascending: false }).limit(4);
         const formattedHistory = history ? history.reverse().map(h => ({ role: h.role, content: h.content })) : [];
 
-        // 5. Groq AI Call
-        const aiResponse = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
-            model: "llama-3.3-70b-versatile",
-            messages: [
-                { role: "system", content: `You are Ria, the helpful AI assistant for ${client.name}. Respond politely.` },
-                ...formattedHistory,
-                { role: "user", content: message }
-            ],
-            temperature: 0.7
-        }, {
-            headers: { 'Authorization': `Bearer ${currentKey}` }
+        // 5. Groq AI Call (Using Native Fetch instead of Axios)
+        const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${currentKey}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model: "llama-3.3-70b-versatile",
+                messages: [
+                    { role: "system", content: `You are Ria, AI assistant for ${client.name}.` },
+                    ...formattedHistory,
+                    { role: "user", content: message }
+                ],
+                temperature: 0.7
+            })
         });
 
-        const botReply = aiResponse.data.choices[0].message.content;
+        const aiData = await groqResponse.json();
+        const botReply = aiData.choices[0].message.content;
 
-        // 6. DB Updates (Background)
+        // 6. DB Updates
         await Promise.all([
             supabase.from('conversations').insert([
                 { client_id, session_id, role: 'user', content: message },
@@ -90,11 +85,10 @@ export const handler = async (event) => {
         };
 
     } catch (error) {
-        console.error("Netlify Function Error:", error.message);
         return {
-            statusCode: 200, // Error එකකදීත් 200 දීමෙන් CORS Block වීම වැළැක්විය හැක
+            statusCode: 200,
             headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-            body: JSON.stringify({ reply: "සමාවන්න, පද්ධතියේ දෝෂයක්. නැවත උත්සාහ කරන්න.", debug: error.message }),
+            body: JSON.stringify({ reply: "පද්ධතියේ දෝෂයක්.", debug: error.message }),
         };
     }
 };
