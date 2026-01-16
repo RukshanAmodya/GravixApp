@@ -1,22 +1,22 @@
 import { createClient } from '@supabase/supabase-js';
 
-// --- CONFIGURATION (Sottik kora) ---
-// Supabase connection aar authentication setup korche
+// --- CONFIGURATION (Siddhant nirdharan) ---
+// Supabase sathe judava mate ane authentication mate setup
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
-// API Key rotation logic - GROQ keys gulo use korar jonno
+// API Key rotation logic - GROQ API keys vaparva mate
 const getGroqKeys = () => {
     return Object.keys(process.env)
         .filter(key => key.startsWith('GROQ_KEY_'))
         .map(key => process.env[key]);
 };
 
-// Telegram Bot Token environment variable theke neya hocche
+// Telegram Bot Token environment variable mathi levama avyo che
 const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 
 export const handler = async (event) => {
-    // 1. CORS Preflight Handling (Anumoti porikkha)
-    // Browser theke OPTIONS request ashle anumoti deya hocche
+    // 1. CORS Preflight Handling (CORS parikshan)
+    // Browser mathi OPTIONS request ave tyre parmishion aapva
     if (event.httpMethod === "OPTIONS") {
         return {
             statusCode: 200,
@@ -29,7 +29,7 @@ export const handler = async (event) => {
         };
     }
 
-    // Shudhu POST requests allow kora hocche
+    // Fakt POST request ne ja parmishion che
     if (event.httpMethod !== "POST") {
         return { 
             statusCode: 405, 
@@ -42,7 +42,7 @@ export const handler = async (event) => {
         const body = JSON.parse(event.body);
         const { client_id, type } = body;
 
-        // Client authentication porikkha kora
+        // Client validity parikshan
         const { data: client, error: clientErr } = await supabase
             .from('clients').select('*').eq('id', client_id).single();
 
@@ -54,19 +54,19 @@ export const handler = async (event) => {
             };
         }
 
-        // --- MODULE: AI CHAT (AI er sathe kothopokothon) ---
+        // --- MODULE: AI CHAT (Generic AI handler) ---
         if (type === "chat") {
             const { session_id, message } = body;
             const keys = getGroqKeys();
             const currentKey = keys[Math.floor(Math.random() * keys.length)];
 
-            // Purono kothopokothon ana hocche (Context memory)
+            // Junu sanvad (Context) levi rahya che
             const { data: history } = await supabase
                 .from('conversations').select('role, content')
                 .eq('session_id', session_id).order('created_at', { ascending: false }).limit(4);
             const formattedHistory = history ? history.reverse().map(h => ({ role: h.role, content: h.content })) : [];
 
-            // AI API Call (Groq) - Multi-language rules set kora hoyeche
+            // AI API Call (Groq) - Generic handler with minimal system prompt
             const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
                 method: 'POST',
                 headers: {
@@ -78,12 +78,7 @@ export const handler = async (event) => {
                     messages: [
                         { 
                             role: "system", 
-                            content: `You are Ria, the creative AI assistant for ${client.name}.
-                            STRICT LANGUAGE RULES:
-                            1. If user messages in English, reply in English.
-                            2. If user messages in Sinhala, reply in Sinhala script (Sinhala letters).
-                            3. If user messages in Singlish (Sinhala using English letters), you MUST reply in Sinhala script (Sinhala letters).
-                            Always be helpful, professional, and safe.` 
+                            content: "Powered by Questra." 
                         },
                         ...formattedHistory,
                         { role: "user", content: message }
@@ -93,9 +88,9 @@ export const handler = async (event) => {
             });
 
             const aiData = await groqResponse.json();
-            const botReply = aiData.choices?.[0]?.message?.content || "API Error: No response from AI.";
+            const botReply = aiData.choices?.[0]?.message?.content || "API Error: Unable to fetch response.";
 
-            // Database update (Logs save kora hocche)
+            // Database update (Logs save kari rahya che)
             await Promise.all([
                 supabase.from('conversations').insert([
                     { client_id, session_id, role: 'user', content: message },
@@ -111,7 +106,7 @@ export const handler = async (event) => {
             };
         }
 
-        // --- MODULE: NOTIFICATIONS (Telegram alert) ---
+        // --- MODULE: NOTIFICATIONS (Telegram Alert) ---
         if (type === "notify") {
             const { notification_text } = body;
 
@@ -145,7 +140,7 @@ export const handler = async (event) => {
         return {
             statusCode: 500,
             headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-            body: JSON.stringify({ error: "Server Error", details: error.message }),
+            body: JSON.stringify({ error: "Internal Server Error", details: error.message }),
         };
     }
 };
