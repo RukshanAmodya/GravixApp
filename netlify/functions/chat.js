@@ -5,7 +5,7 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SER
 // Multi-API Failover Logic
 async function callAIWithFailover(messages, plan) {
     const providers = [
-        { name: 'Groq', model: plan === 'Pro' ? 'llama-3.3-70b-versatile' : 'llama-3.1-8b-instant', url: 'https://api.groq.com/openai/v1/chat/completions', key: process.env.GROQ_API_KEY },
+        { name: 'Groq', model: plan === 'Pro' ? 'moonshotai/kimi-k2-instruct-0905' : 'moonshotai/kimi-k2-instruct-0905', url: 'https://api.groq.com/openai/v1/chat/completions', key: process.env.GROQ_API_KEY },
         { name: 'Gemini', model: 'gemini-1.5-pro', url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', key: process.env.GEMINI_API_KEY }
     ];
 
