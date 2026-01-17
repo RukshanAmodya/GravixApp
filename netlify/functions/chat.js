@@ -14,7 +14,11 @@ async function callAIWithFailover(messages, plan) {
             const response = await fetch(provider.url, {
                 method: 'POST',
                 headers: { 'Authorization': `Bearer ${provider.key}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ model: provider.model, messages, temperature: 0.6 })
+                body: JSON.stringify({ 
+                    model: provider.model, 
+                    messages, 
+                    temperature: 0.1 // නිර්මාණශීලීත්වය අවම කර දත්ත වලට පමණක් සීමා කිරීමට (Strict Accuracy)
+                })
             });
             const data = await response.json();
             if (data.choices?.[0]?.message?.content) return data.choices[0].message.content;
@@ -57,7 +61,6 @@ export const handler = async (event) => {
 
         const limits = { 'Lite': 30, 'Standard': 70, 'Pro': 150 };
         
-        // --- FRIENDLY LIMIT MESSAGE FIX ---
         if (currentUsage >= (limits[plan] || 30)) {
             const whatsappMsg = `අපගේ AI සහායකයා දැනට කාර්යබහුලයි. 🕒 කරුණාකර අපගේ නිල WhatsApp අංකය හරහා කෙලින්ම අපව සම්බන්ධ කරගන්න. අපි ඔබට ඉක්මනින් සහාය වන්නෙමු!`;
             return { statusCode: 200, headers, body: JSON.stringify({ reply: whatsappMsg }) };
@@ -65,18 +68,24 @@ export const handler = async (event) => {
 
         const productKB = products.map(p => `● ${p.name}: ${p.description} (Rs. ${p.price}) [IMAGE: ${p.image_url}]`).join('\n');
         
+        // --- දත්ත වලට පමණක් සීමා වීමට අවශ්‍ය දැඩි උපදෙස් ඇතුළත් System Prompt එක ---
         const systemPrompt = `
-            Identity: You are ${config.bot_name}, staff of ${config.clients.business_name}.
+            Identity: You are ${config.bot_name}, a staff member of ${config.clients.business_name}.
             Persona: ${config.system_prompt}
-            Knowledge: ${config.knowledge_base}
-            Products: 
-            ${productKB}
             
-            RULES:
-            1. Use [IMAGE: URL] tag whenever you mention a product.
-            2. If lead info (Name/Phone) is shared, end reply with [LEAD_DATA: Name | Phone | Interest].
-            3. Answer in the user's language (Sinhala/English).
-            4. Be conversational. Don't push sales unless the user asks for products.
+            STRICT RULES:
+            1. ONLY provide information about products listed in the "AVAILABLE PRODUCTS" section below.
+            2. If a user asks for a product NOT in the list (like Vanilla cake, buns, etc., when not listed), you MUST politely state that it is NOT currently available.
+            3. DO NOT invent, hallucinate, or assume the existence of any products or services.
+            4. Use [IMAGE: URL] tag whenever you mention a product from the list.
+            5. If lead info (Name/Phone) is shared, end reply with [LEAD_DATA: Name | Phone | Interest].
+            6. Respond warmly in the user's language (Sinhala/English).
+
+            BUSINESS INFO:
+            ${config.knowledge_base}
+
+            AVAILABLE PRODUCTS: 
+            ${productKB || 'No products are currently listed in the system.'}
         `;
 
         const { data: history } = await supabase.from('conversations').select('role, content').eq('session_id', session_id).order('created_at', { ascending: false }).limit(4);
