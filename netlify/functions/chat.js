@@ -14,9 +14,9 @@ async function callAIWithFailover(messages, plan) {
             const response = await fetch(provider.url, {
                 method: 'POST',
                 headers: { 'Authorization': `Bearer ${provider.key}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ 
-                    model: provider.model, 
-                    messages, 
+                body: JSON.stringify({
+                    model: provider.model,
+                    messages,
                     temperature: 0.1 // නිර්මාණශීලීත්වය අවම කර දත්ත වලට පමණක් සීමා කිරීමට (Strict Accuracy)
                 })
             });
@@ -59,15 +59,32 @@ export const handler = async (event) => {
         const plan = config.clients.plan_type;
         const currentUsage = usageRes.data?.chat_count || 0;
 
+        // --- SECURITY: ORIGIN CHECK ---
+        const requestOrigin = event.headers.origin || event.headers.referer;
+        const allowedOrigin = config.clients.target_website;
+
+        // Normalize origins (remove trailing slash for comparison)
+        const cleanReqOrigin = requestOrigin ? requestOrigin.replace(/\/$/, "") : "";
+        const cleanAllowedOrigin = allowedOrigin ? allowedOrigin.replace(/\/$/, "") : "";
+
+        if (cleanAllowedOrigin && !cleanReqOrigin.includes(cleanAllowedOrigin)) {
+            console.error(`Security Block: Request from ${cleanReqOrigin} denied. Expected ${cleanAllowedOrigin}`);
+            return {
+                statusCode: 403,
+                headers,
+                body: JSON.stringify({ reply: "🔒 Access Denied: Unauthorized Website Origin." })
+            };
+        }
+
         const limits = { 'Lite': 30, 'Standard': 70, 'Pro': 150 };
-        
+
         if (currentUsage >= (limits[plan] || 30)) {
             const whatsappMsg = `අපගේ AI සහායකයා දැනට කාර්යබහුලයි. 🕒 කරුණාකර අපගේ නිල WhatsApp අංකය හරහා කෙලින්ම අපව සම්බන්ධ කරගන්න. අපි ඔබට ඉක්මනින් සහාය වන්නෙමු!`;
             return { statusCode: 200, headers, body: JSON.stringify({ reply: whatsappMsg }) };
         }
 
         const productKB = products.map(p => `● ${p.name}: ${p.description} (Rs. ${p.price}) [IMAGE: ${p.image_url}]`).join('\n');
-        
+
         // --- දත්ත වලට පමණක් සීමා වීමට අවශ්‍ය දැඩි උපදෙස් ඇතුළත් System Prompt එක ---
         const systemPrompt = `
             Identity: You are ${config.bot_name}, a staff member of ${config.clients.business_name}.
@@ -89,7 +106,7 @@ export const handler = async (event) => {
         `;
 
         const { data: history } = await supabase.from('conversations').select('role, content').eq('session_id', session_id).order('created_at', { ascending: false }).limit(4);
-        
+
         const messages = [
             { role: "system", content: systemPrompt },
             ...(history || []).reverse().map(h => ({ role: h.role, content: h.content })),
@@ -113,10 +130,10 @@ export const handler = async (event) => {
             ])
         ]);
 
-        return { 
-            statusCode: 200, 
-            headers, 
-            body: JSON.stringify({ reply: aiReply.replace(/\[LEAD_DATA: .*?\]/, "").trim() }) 
+        return {
+            statusCode: 200,
+            headers,
+            body: JSON.stringify({ reply: aiReply.replace(/\[LEAD_DATA: .*?\]/, "").trim() })
         };
 
     } catch (e) {
