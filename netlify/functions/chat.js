@@ -68,21 +68,31 @@ export const handler = async (event) => {
         const cleanReqOrigin = requestOrigin ? requestOrigin.replace(/\/$/, "") : "";
         const cleanAllowedOrigin = allowedOrigin ? allowedOrigin.replace(/\/$/, "") : "";
 
-        if (cleanAllowedOrigin && !cleanReqOrigin.includes(cleanAllowedOrigin)) {
-            console.error(`Security Block: Request from ${cleanReqOrigin} denied. Expected ${cleanAllowedOrigin}`);
-            return { statusCode: 403, headers, body: JSON.stringify({ reply: "🔒 Access Denied: Unauthorized Website Origin." }) };
-        }
-
-        // --- STATUS CHECK (BLOCK SUSPENDED) ---
-        if (status === 'Suspended') {
-            return { statusCode: 200, headers, body: JSON.stringify({ reply: "⛔ Service Suspended. Contact support to reactivate." }) };
-        }
-
+        // --- STATUS CHECK & THROTTLING LOGIC ---
         const limits = { 'Lite': 30, 'Standard': 70, 'Pro': 150 };
+        const dailyLimit = limits[plan] || 30;
+        const graceLimit = 5;
+        const waMsg = `අපගේ AI සහායකයා දැනට කාර්යබහුලයි. 🕒 කරුණාකර අපගේ නිල WhatsApp අංකය හරහා කෙලින්ම අපව සම්බන්ධ කරගන්න. අපි ඔබට ඉක්මනින් සහාය වන්නෙමු!`;
 
-        if (currentUsage >= (limits[plan] || 30)) {
-            const whatsappMsg = `අපගේ AI සහායකයා දැනට කාර්යබහුලයි. 🕒 කරුණාකර අපගේ නිල WhatsApp අංකය හරහා කෙලින්ම අපව සම්බන්ධ කරගන්න. අපි ඔබට ඉක්මනින් සහාය වන්නෙමු!`;
-            return { statusCode: 200, headers, body: JSON.stringify({ reply: whatsappMsg }) };
+        if (status === 'Suspended') {
+            return { statusCode: 200, headers, body: JSON.stringify({ reply: waMsg }) };
+        }
+
+        if (status === 'Grace_Period') {
+            if (currentUsage >= (dailyLimit + graceLimit)) {
+                // Transition Level 2: Grace -> Suspended
+                await supabase.from('clients').update({ status: 'Suspended' }).eq('id', client_id);
+                return { statusCode: 200, headers, body: JSON.stringify({ reply: waMsg }) };
+            }
+            // Else: Allow chatting (consuming grace quota)
+        }
+
+        if (status === 'Active') {
+            if (currentUsage >= dailyLimit) {
+                // Transition Level 1: Active -> Grace
+                await supabase.from('clients').update({ status: 'Grace_Period' }).eq('id', client_id);
+                // Allow this first message of grace period
+            }
         }
 
         const productKB = products.map(p => `● ${p.name}: ${p.description} (Rs. ${p.price}) [IMAGE: ${p.image_url}]`).join('\n');
