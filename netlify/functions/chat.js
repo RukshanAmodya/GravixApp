@@ -57,23 +57,25 @@ export const handler = async (event) => {
         const config = configRes.data;
         const products = productsRes.data || [];
         const plan = config.clients.plan_type;
+        const status = config.clients.status; // Get Status
         const currentUsage = usageRes.data?.chat_count || 0;
 
         // --- SECURITY: ORIGIN CHECK ---
         const requestOrigin = event.headers.origin || event.headers.referer;
         const allowedOrigin = config.clients.target_website;
 
-        // Normalize origins (remove trailing slash for comparison)
+        // Normalize origins
         const cleanReqOrigin = requestOrigin ? requestOrigin.replace(/\/$/, "") : "";
         const cleanAllowedOrigin = allowedOrigin ? allowedOrigin.replace(/\/$/, "") : "";
 
         if (cleanAllowedOrigin && !cleanReqOrigin.includes(cleanAllowedOrigin)) {
             console.error(`Security Block: Request from ${cleanReqOrigin} denied. Expected ${cleanAllowedOrigin}`);
-            return {
-                statusCode: 403,
-                headers,
-                body: JSON.stringify({ reply: "🔒 Access Denied: Unauthorized Website Origin." })
-            };
+            return { statusCode: 403, headers, body: JSON.stringify({ reply: "🔒 Access Denied: Unauthorized Website Origin." }) };
+        }
+
+        // --- STATUS CHECK (BLOCK SUSPENDED) ---
+        if (status === 'Suspended') {
+            return { statusCode: 200, headers, body: JSON.stringify({ reply: "⛔ Service Suspended. Contact support to reactivate." }) };
         }
 
         const limits = { 'Lite': 30, 'Standard': 70, 'Pro': 150 };
