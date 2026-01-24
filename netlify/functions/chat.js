@@ -69,7 +69,7 @@ export const handler = async (event) => {
         const cleanAllowedOrigin = allowedOrigin ? allowedOrigin.replace(/\/$/, "") : "";
 
         // --- STATUS CHECK & THROTTLING LOGIC ---
-        const limits = { 'Lite': 30, 'Standard': 70, 'Pro': 150 };
+        const limits = { 'Lite': 300, 'Standard': 700, 'Pro': 1500 };
         const dailyLimit = limits[plan] || 30;
         const graceLimit = 5;
         const waMsg = `අපගේ AI සහායකයා දැනට කාර්යබහුලයි. 🕒 කරුණාකර අපගේ නිල WhatsApp අංකය හරහා කෙලින්ම අපව සම්බන්ධ කරගන්න. අපි ඔබට ඉක්මනින් සහාය වන්නෙමු!`;
