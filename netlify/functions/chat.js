@@ -5,7 +5,7 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SER
 // Multi-API Failover Logic
 async function callAIWithFailover(messages, plan) {
     const providers = [
-        { name: 'Groq', model: plan === 'Pro' ? 'openai/gpt-oss-120b' : 'openai/gpt-oss-120b', url: 'https://api.groq.com/openai/v1/chat/completions', key: process.env.GROQ_API_KEY },
+        { name: 'Groq', model: 'openai/gpt-oss-120b', url: 'https://api.groq.com/openai/v1/chat/completions', key: process.env.GROQ_API_KEY },
         { name: 'Gemini', model: 'gemini-1.5-pro', url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', key: process.env.GEMINI_API_KEY }
     ];
 
@@ -17,7 +17,7 @@ async function callAIWithFailover(messages, plan) {
                 body: JSON.stringify({
                     model: provider.model,
                     messages,
-                    temperature: 0.1 // නිර්මාණශීලීත්වය අවම කර දත්ත වලට පමණක් සීමා කිරීමට (Strict Accuracy)
+                    temperature: 0.3 // ටිකක් ස්වභාවික සහ සුහද සංවාදයක් සඳහා
                 })
             });
             const data = await response.json();
@@ -48,75 +48,55 @@ export const handler = async (event) => {
     try {
         const { client_id, session_id, message } = JSON.parse(event.body);
 
-        const [configRes, productsRes, usageRes] = await Promise.all([
+        // Fetch Config, Products, Usage, and check for existing leads simultaneously
+        const [configRes, productsRes, usageRes, existingLeadRes] = await Promise.all([
             supabase.from('bot_configs').select('*, clients(*)').eq('client_id', client_id).single(),
             supabase.from('products').select('*').eq('client_id', client_id),
-            supabase.from('usage_logs').select('chat_count').eq('client_id', client_id).eq('usage_date', new Date().toISOString().split('T')[0]).single()
+            supabase.from('usage_logs').select('chat_count').eq('client_id', client_id).eq('usage_date', new Date().toISOString().split('T')[0]).single(),
+            supabase.from('leads').select('*').eq('client_id', client_id).eq('customer_phone', message.match(/\d{9,10}/)?.[0] || 'none').maybeSingle()
         ]);
 
         const config = configRes.data;
         const products = productsRes.data || [];
         const plan = config.clients.plan_type;
-        const status = config.clients.status; // Get Status
+        const status = config.clients.status;
         const currentUsage = usageRes.data?.chat_count || 0;
 
-        // --- SECURITY: ORIGIN CHECK ---
-        const requestOrigin = event.headers.origin || event.headers.referer;
-        const allowedOrigin = config.clients.target_website;
-
-        // Normalize origins
-        const cleanReqOrigin = requestOrigin ? requestOrigin.replace(/\/$/, "") : "";
-        const cleanAllowedOrigin = allowedOrigin ? allowedOrigin.replace(/\/$/, "") : "";
-
-        // --- STATUS CHECK & THROTTLING LOGIC ---
+        // --- STATUS & LIMIT CHECK ---
         const limits = { 'Lite': 300, 'Standard': 700, 'Pro': 1500 };
         const dailyLimit = limits[plan] || 30;
-        const graceLimit = 5;
-        const waMsg = `අපගේ AI සහායකයා දැනට කාර්යබහුලයි. 🕒 කරුණාකර අපගේ නිල WhatsApp අංකය හරහා කෙලින්ම අපව සම්බන්ධ කරගන්න. අපි ඔබට ඉක්මනින් සහාය වන්නෙමු!`;
+        const waMsg = `අපගේ AI සහායකයා දැනට කාර්යබහුලයි. 🕒 කරුණාකර අපගේ නිල WhatsApp අංකය හරහා කෙලින්ම අපව සම්බන්ධ කරගන්න.`;
 
-        if (status === 'Suspended') {
+        if (status === 'Suspended' || currentUsage >= dailyLimit) {
             return { statusCode: 200, headers, body: JSON.stringify({ reply: waMsg }) };
         }
 
-        if (status === 'Grace_Period') {
-            if (currentUsage >= (dailyLimit + graceLimit)) {
-                // Transition Level 2: Grace -> Suspended
-                await supabase.from('clients').update({ status: 'Suspended' }).eq('id', client_id);
-                return { statusCode: 200, headers, body: JSON.stringify({ reply: waMsg }) };
-            }
-            // Else: Allow chatting (consuming grace quota)
-        }
+        const productKB = products.map(p => `● ${p.name}: ${p.description} (Rs. ${p.price})`).join('\n');
 
-        if (status === 'Active') {
-            if (currentUsage >= dailyLimit) {
-                // Transition Level 1: Active -> Grace
-                await supabase.from('clients').update({ status: 'Grace_Period' }).eq('id', client_id);
-                // Allow this first message of grace period
-            }
-        }
+        // Check if lead data exists in current session history or DB
+        const hasLeadData = existingLeadRes.data ? true : false;
 
-        const productKB = products.map(p => `● ${p.name}: ${p.description} (Rs. ${p.price}) [IMAGE: ${p.image_url}]`).join('\n');
-
-        // --- දත්ත වලට පමණක් සීමා වීමට අවශ්‍ය දැඩි උපදෙස් ඇතුළත් System Prompt එක ---
+        // --- UPDATED DYNAMIC SYSTEM PROMPT ---
         const systemPrompt = `
-            Identity: You are ${config.bot_name}, a staff member of ${config.clients.business_name}.
+            Identity: You are ${config.bot_name}, a friendly staff member of ${config.clients.business_name}.
             Persona: ${config.system_prompt}
             
-            STRICT RULES:
-            1. ONLY provide information about products listed in the "AVAILABLE PRODUCTS" section below.
-            2. If a user asks for a product NOT in the list (like Vanilla cake, buns, etc., when not listed), you MUST politely state that it is NOT currently available.
-            3. DO NOT invent, hallucinate, or assume the existence of any products or services.
-            4. Use [IMAGE: URL] tag whenever you mention a product from the list.
-            5. If lead info (Name/Phone) is shared, end reply with [LEAD_DATA: Name | Phone | Interest].
-            6. Respond warmly in the user's language (Sinhala/English).
+            CONVERSATION RULES:
+            1. WARM GREETING: If the user says "Hi", "Hello", or similar, greet them warmly and ask how you can assist. DO NOT jump to sales or ask for phone numbers immediately.
+            2. NO REPETITION: Always check the history. If you have the user's name or number, NEVER ask for it again. 
+            3. LEAD AWARENESS: ${hasLeadData ? "We already have this user's contact details. DO NOT ask for their name or WhatsApp number." : "If the user wants to book or asks for prices, then politely ask for their Name and WhatsApp number."}
+            4. CONTINUITY: If the user provides details and then asks a follow-up, answer the follow-up directly without restarting the greeting.
+            5. RESPONSE FORMAT: Use Sinhala or English as per user's preference. Warm, professional tone.
+            6. LEAD CAPTURE: ONLY if details are provided for the first time, use [LEAD_DATA: Name | Phone | Interest].
 
             BUSINESS INFO:
             ${config.knowledge_base}
 
             AVAILABLE PRODUCTS: 
-            ${productKB || 'No products are currently listed in the system.'}
+            ${productKB || 'General inquiries only.'}
         `;
 
+        // Deep Memory: Fetch last 20 messages
         const { data: history } = await supabase.from('conversations').select('role, content').eq('session_id', session_id).order('created_at', { ascending: false }).limit(20);
 
         const messages = [
@@ -127,6 +107,7 @@ export const handler = async (event) => {
 
         const aiReply = await callAIWithFailover(messages, plan);
 
+        // Lead Processing
         if (aiReply.includes("[LEAD_DATA:")) {
             const leadRaw = aiReply.match(/\[LEAD_DATA: (.*?)\]/)?.[1];
             const [name, phone, interest] = leadRaw.split('|').map(s => s.trim());
@@ -134,6 +115,7 @@ export const handler = async (event) => {
             await sendTelegramAlert(config.clients.telegram_chat_id, `🎯 *New Lead!*\n\nName: ${name}\nPhone: ${phone}\nInterest: ${interest}`);
         }
 
+        // Parallel update: Usage log + Conversation history
         await Promise.all([
             supabase.rpc('increment_usage', { client_uid: client_id }),
             supabase.from('conversations').insert([
