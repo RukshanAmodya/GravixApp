@@ -1,112 +1,569 @@
-(function() {
-    // 1. Script එකෙන් Client ID එක ලබා ගැනීම
+(function () {
+    // 1. Client ID Validation
     const scriptTag = document.currentScript;
-    const clientId = scriptTag.getAttribute('data-id');
-    const backendUrl = 'https://gravixapp.netlify.app/api/chat'; 
+    const clientId = scriptTag.getAttribute('data-id') || 'demo-id';
+    // Using a simulated backend or real one? The user pasted the real one. 
+    // We will keep the real url but knowing we might restrict it later.
+    const backendUrl = 'https://gravixapp.netlify.app/api/chat';
 
-    if (!clientId) return console.error("Studio Gravix: Client ID missing!");
+    // 2. Load Google Fonts (Google Sans Flex to match website)
+    const fontLink = document.createElement('link');
+    fontLink.href = 'https://fonts.googleapis.com/css2?family=Google+Sans+Flex:wght@100;200;300;400;500;600;700&display=swap';
+    fontLink.rel = 'stylesheet';
+    document.head.appendChild(fontLink);
 
-    // 2. UI එක සඳහා අවශ්‍ය CSS Inject කිරීම (Shadow DOM පාවිච්චි කිරීම වඩාත් සුදුසුයි)
+    // 3. Inject Cake Shop Themed CSS
     const style = document.createElement('style');
     style.innerHTML = `
-        #gravix-container { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; position: fixed; bottom: 20px; right: 20px; z-index: 999999; }
-        .gravix-button { width: 60px; height: 60px; rounded-full; cursor: pointer; border: none; shadow: 0 4px 15px rgba(0,0,0,0.2); transition: 0.3s; display: flex; items-center; justify-content: center; border-radius: 50%; }
-        .gravix-window { position: absolute; bottom: 80px; right: 0; width: 370px; height: 550px; background: #fff; border-radius: 25px; display: none; flex-direction: column; overflow: hidden; box-shadow: 0 10px 40px rgba(0,0,0,0.15); border: 1px solid #eee; }
-        @media (max-width: 480px) { .gravix-window { width: 100vw; height: 100vh; bottom: 0; right: 0; border-radius: 0; position: fixed; } }
-        .gravix-header { padding: 20px; color: white; display: flex; align-items: center; gap: 12px; }
-        .gravix-messages { flex: 1; padding: 15px; overflow-y: auto; background: #f9f9f9; display: flex; flex-direction: column; gap: 10px; }
-        .gravix-msg { padding: 10px 15px; border-radius: 15px; max-width: 80%; font-size: 14px; line-height: 1.4; }
-        .gravix-msg.user { background: #0071e3; color: white; align-self: flex-end; border-bottom-right-radius: 2px; }
-        .gravix-msg.bot { background: white; color: #333; align-self: flex-start; border-bottom-left-radius: 2px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
-        .gravix-input-area { padding: 15px; background: white; border-top: 1px solid #eee; display: flex; gap: 10px; }
-        .gravix-input { flex: 1; border: none; background: #f0f0f0; padding: 10px 15px; border-radius: 20px; outline: none; font-size: 14px; }
-        .gravix-send { border: none; background: none; color: #0071e3; cursor: pointer; font-weight: bold; }
-        .gravix-img { width: 100%; border-radius: 12px; margin-top: 8px; }
+        :root {
+            --qg-primary: #F57C00;   /* Orange 600 */
+            --qg-accent: #FF9800;    /* Orange 500 */
+            --qg-bg-glass: rgba(255, 255, 255, 0.9); /* White Glass */
+            --qg-border-glass: rgba(0, 0, 0, 0.05);
+            --qg-text-main: #333333;
+            --qg-text-sub: #666666;
+            --qg-font: 'Google Sans Flex', sans-serif;
+            --qg-easing: cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        #qgent-container {
+            font-family: var(--qg-font);
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            z-index: 2147483647;
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            pointer-events: none;
+        }
+
+        #qgent-container * { box-sizing: border-box; }
+        #qgent-container > * { pointer-events: auto; }
+
+        /* --- Toggle Button --- */
+        .qgent-button {
+            width: 70px;
+            height: 70px;
+            border-radius: 50%;
+            cursor: pointer;
+            box-shadow: 0 10px 30px rgba(245, 124, 0, 0.3); /* Orange Shadow */
+            transition: all 0.4s var(--qg-easing);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            z-index: 20;
+            padding: 0;
+            background: white; 
+            border: 3px solid white;
+            overflow: hidden;
+        }
+
+        .qgent-button:hover { transform: scale(1.1); box-shadow: 0 15px 40px rgba(245, 124, 0, 0.4); }
+        .qgent-button:active { transform: scale(0.95); }
+
+        .qgent-video-circle {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            border-radius: 50%;
+        }
+
+        /* --- Main Window (White Glass) --- */
+        .qgent-window {
+            position: absolute;
+            bottom: 100px; 
+            right: 0;
+            width: 380px;
+            height: 600px;
+            background: var(--qg-bg-glass);
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+            border-radius: 32px;
+            border: 1px solid var(--qg-border-glass);
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.1), inset 0 1px 0 rgba(255,255,255,0.5);
+            display: none;
+            flex-direction: column;
+            overflow: hidden;
+            transform-origin: bottom right;
+            opacity: 0;
+            transform: scale(0.8) translateY(20px);
+            transition: all 0.6s var(--qg-easing);
+        }
+
+        .qgent-window.open {
+            display: flex;
+            opacity: 1;
+            transform: scale(1) translateY(0);
+        }
+
+        /* --- Header --- */
+        .qgent-header {
+            padding: 20px 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 1px solid rgba(0,0,0,0.05);
+            background: rgba(255,255,255,0.5);
+        }
+
+        .qgent-header-back {
+            display: none;
+            background: none;
+            border: none;
+            color: var(--qg-text-main);
+            cursor: pointer;
+            padding: 8px;
+            margin-right: 8px;
+        }
+
+        .qgent-header-title { font-size: 16px; font-weight: 700; color: var(--qg-text-main); letter-spacing: -0.5px; }
+
+        .qgent-close {
+            background: none; border: none; cursor: pointer; color: var(--qg-text-sub);
+            padding: 4px; border-radius: 50%; transition: 0.2s;
+        }
+        .qgent-close:hover { background: rgba(0,0,0,0.05); color: var(--qg-text-main); }
+
+        /* --- Welcome View --- */
+        .qgent-welcome {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 30px;
+            text-align: center;
+            transition: 0.4s;
+        }
+
+        .qgent-orb-video {
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            object-fit: cover;
+            margin-bottom: 32px;
+            box-shadow: 0 10px 40px rgba(245, 124, 0, 0.2);
+            border: 4px solid white;
+        }
+
+        .qgent-welcome h2 {
+            font-size: 28px;
+            font-weight: 800;
+            color: var(--qg-text-main);
+            margin: 0 0 12px;
+            opacity: 0;
+            animation: fadeInUp 0.8s 0.2s forwards var(--qg-easing);
+            letter-spacing: -1px;
+        }
+
+        .qgent-welcome h3 {
+            font-size: 20px;
+            font-weight: 500;
+            color: var(--qg-text-sub);
+            margin: 0;
+            opacity: 0;
+            animation: fadeInUp 0.8s 0.3s forwards var(--qg-easing);
+        }
+
+        /* --- Chat View --- */
+        .qgent-chat-area {
+            flex: 1;
+            display: none;
+            flex-direction: column;
+            overflow: hidden;
+            background: rgba(255,255,255,0.3);
+        }
+
+        .qgent-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .qgent-msg {
+            max-width: 85%;
+            padding: 14px 20px;
+            font-size: 15px;
+            font-weight: 400;
+            line-height: 1.5;
+            animation: msgPop 0.4s var(--qg-easing) forwards;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.02);
+        }
+
+        .qgent-msg.user {
+            align-self: flex-end;
+            background: var(--qg-primary);
+            color: white;
+            border-radius: 20px 20px 4px 20px;
+            box-shadow: 0 5px 15px rgba(245, 124, 0, 0.2);
+        }
+
+        .qgent-msg.bot {
+            align-self: flex-start;
+            background: white;
+            color: var(--qg-text-main);
+            border-radius: 20px 20px 20px 4px;
+            border: 1px solid rgba(0,0,0,0.05);
+        }
+
+        .qgent-img {
+            max-width: 100%;
+            border-radius: 12px;
+            margin-bottom: 8px;
+        }
+
+        @keyframes msgPop {
+            from { opacity: 0; transform: translateY(15px) scale(0.95); }
+            to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* --- Input Area --- */
+        .qgent-input-container {
+            padding: 20px;
+            background: rgba(255,255,255,0.8);
+            border-top: 1px solid rgba(0,0,0,0.05);
+        }
+
+        .qgent-input-box {
+            background: white;
+            border: 1px solid rgba(0,0,0,0.08);
+            border-radius: 24px;
+            display: flex;
+            flex-direction: column;
+            transition: 0.3s;
+            overflow: hidden;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.03);
+        }
+
+        .qgent-input-box:focus-within {
+            border-color: var(--qg-accent);
+            box-shadow: 0 5px 20px rgba(245, 124, 0, 0.1);
+        }
+
+        .qgent-input {
+            width: 100%;
+            background: transparent;
+            border: none;
+            padding: 16px;
+            color: var(--qg-text-main);
+            font-family: var(--qg-font);
+            font-size: 16px;
+            outline: none;
+            min-height: 24px;
+            resize: none;
+            height: auto;
+            max-height: 120px;
+            overflow-y: auto;
+        }
+        .qgent-input::placeholder { color: #94a3b8; }
+
+        .qgent-tools {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 12px;
+            background: #FAFAFA;
+            border-top: 1px solid rgba(0,0,0,0.03);
+        }
+
+        .qgent-tool-group { display: flex; gap: 8px; }
+
+        .qgent-tool-btn {
+            background: transparent;
+            border: none;
+            border-radius: 12px;
+            padding: 8px;
+            color: #94a3b8;
+            font-size: 13px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: 0.2s;
+            font-weight: 500;
+        }
+        .qgent-tool-btn:hover { background: rgba(0,0,0,0.05); color: var(--qg-text-main); }
+        
+        .qgent-send-btn {
+            background: var(--qg-primary);
+            color: white;
+            border: none;
+            border-radius: 20px;
+            padding: 8px 16px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: 0.3s;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            box-shadow: 0 4px 10px rgba(245, 124, 0, 0.2);
+        }
+        .qgent-send-btn:hover { transform: translateY(-1px); box-shadow: 0 6px 15px rgba(245, 124, 0, 0.3); }
+        .qgent-send-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; background: #cbd5e1; }
+
+        /* Toast for Demo Restriction */
+        .qgent-toast {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%) translateY(-20px);
+            background: #1e293b;
+            color: white;
+            padding: 10px 16px;
+            border-radius: 50px;
+            font-size: 12px;
+            font-weight: 500;
+            opacity: 0;
+            pointer-events: none;
+            transition: all 0.3s;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            white-space: nowrap;
+            z-index: 100;
+        }
+        .qgent-toast.show {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+        }
+
+        /* Mobile */
+        @media (max-width: 480px) {
+            .qgent-window { width: 100vw; height: 100vh; bottom: 0; right: 0; border-radius: 0; }
+            #qgent-container { bottom: 20px; right: 20px; }
+            .qgent-header-back { display: block; } 
+            .qgent-close { display: none; }
+        }
     `;
     document.head.appendChild(style);
 
-    // 3. HTML ව්‍යුහය නිර්මාණය
+    // 4. Icons
+    const ICONS = {
+        close: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>`,
+        back: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>`,
+        attach: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>`,
+        mic: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>`,
+        arrowUp: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg>`
+    };
+
+    // 5. Structure
     const container = document.createElement('div');
-    container.id = 'gravix-container';
+    container.id = 'qgent-container';
+
+    // Video HTML
+    const VIDEO_BTN_HTML = `
+        <video class="qgent-video-circle" autoplay loop muted playsinline>
+            <source src="Liya.webm" type="video/webm">
+        </video>
+    `;
+
     container.innerHTML = `
-        <button class="gravix-button" id="gv-btn">
-            <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:white"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
-        </button>
-        <div class="gravix-window" id="gv-window">
-            <div class="gravix-header" id="gv-header">
-                <div style="width:40px;height:40px;background:rgba(255,255,255,0.2);border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:bold">G</div>
-                <div>
-                    <div id="gv-bot-name" style="font-weight:bold;font-size:15px">Assistant</div>
-                    <div style="font-size:11px;opacity:0.8">Online</div>
+        <div class="qgent-window" id="qg-window">
+            
+            <div class="qgent-toast" id="qg-toast">Feature unavailable in Demo Mode</div>
+
+            <div class="qgent-header" id="qg-header" style="display:none;">
+                <div style="display:flex; align-items:center">
+                    <button class="qgent-header-back" id="qg-back-btn">${ICONS.back}</button>
+                    <div class="qgent-header-title">Amila Bakes Assistant</div>
                 </div>
+                <div style="width:24px;"></div>
+                <button class="qgent-close" id="qg-close-btn">${ICONS.close}</button>
             </div>
-            <div class="gravix-messages" id="gv-msgs"></div>
-            <div class="gravix-input-area">
-                <input type="text" class="gravix-input" id="gv-input" placeholder="Ask anything...">
-                <button class="gravix-send" id="gv-send">Send</button>
+
+            <!-- Welcome State -->
+            <div class="qgent-welcome" id="qg-welcome">
+                <video class="qgent-orb-video" autoplay loop muted playsinline>
+                    <source src="Liya.webm" type="video/webm">
+                </video>
+                <h2>Welcome to<br>Amila Bakes!</h2>
+                <h3>How can I help you?</h3>
             </div>
-            <div style="font-size:9px;text-align:center;padding:5px;color:#ccc;letter-spacing:1px">POWERED BY STUDIO GRAVIX</div>
+
+            <!-- Chat State -->
+            <div class="qgent-chat-area" id="qg-chat-area">
+                <div class="qgent-messages" id="qg-msgs"></div>
+            </div>
+
+             <!-- Input -->
+            <div class="qgent-input-container">
+                <div class="qgent-input-box">
+                    <textarea class="qgent-input" id="qg-input" placeholder="Ask about our cakes..." rows="1"></textarea>
+                    <div class="qgent-tools">
+                        <div class="qgent-tool-group">
+                            <button class="qgent-tool-btn" id="qg-attach-btn">${ICONS.attach}</button>
+                            <button class="qgent-tool-btn" id="qg-voice-btn">${ICONS.mic}</button>
+                        </div>
+                        <button class="qgent-send-btn" id="qg-send" disabled>Send ${ICONS.arrowUp}</button>
+                    </div>
+                </div>
+                <div style="text-align:center; margin-top:12px; font-size:10px; color:#94a3b8; letter-spacing:1px; text-transform:uppercase;">Powered by Qgent AI</div>
+            </div>
         </div>
+
+        <button class="qgent-button" id="qg-btn">
+            ${VIDEO_BTN_HTML}
+        </button>
     `;
     document.body.appendChild(container);
 
-    // 4. Dashboard එකෙන් Config ලබා ගැනීම (Handshake)
-    async function initWidget() {
-        const res = await fetch(backendUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ client_id: clientId, action: 'GET_CONFIG' })
-        });
-        const config = await res.json();
-        
-        // UI එක Update කිරීම (Dashboard settings අනුව)
-        document.getElementById('gv-btn').style.backgroundColor = config.primary_color || '#0071e3';
-        document.getElementById('gv-header').style.backgroundColor = config.primary_color || '#0071e3';
-        document.getElementById('gv-bot-name').innerText = config.bot_name || 'Assistant';
-        document.getElementById('gv-send').style.color = config.primary_color || '#0071e3';
-        
-        addMessage('bot', config.welcome_message || "Hello! How can I help you?");
+    // 6. Logic
+    let isOpen = false;
+    let hasStartedChat = false;
+
+    const ui = {
+        btn: document.getElementById('qg-btn'),
+        win: document.getElementById('qg-window'),
+        input: document.getElementById('qg-input'),
+        send: document.getElementById('qg-send'),
+        msgs: document.getElementById('qg-msgs'),
+        welcome: document.getElementById('qg-welcome'),
+        chatArea: document.getElementById('qg-chat-area'),
+        header: document.getElementById('qg-header'),
+        attachBtn: document.getElementById('qg-attach-btn'),
+        voiceBtn: document.getElementById('qg-voice-btn'),
+        backBtn: document.getElementById('qg-back-btn'),
+        closeBtn: document.getElementById('qg-close-btn'),
+        toast: document.getElementById('qg-toast')
+    };
+
+    function toggleChat() {
+        isOpen = !isOpen;
+        if (isOpen) {
+            ui.win.classList.add('open');
+            ui.win.style.display = 'flex';
+            setTimeout(() => ui.win.style.opacity = '1', 10);
+
+            // Transform button to Close Icon (Orange)
+            ui.btn.innerHTML = ICONS.close;
+            ui.btn.style.background = '#F57C00';
+            ui.btn.style.borderColor = '#F57C00';
+            ui.btn.style.color = 'white';
+        } else {
+            ui.win.classList.remove('open');
+            ui.win.style.opacity = '0';
+            setTimeout(() => ui.win.style.display = 'none', 500);
+
+            // Restore Video
+            ui.btn.innerHTML = VIDEO_BTN_HTML;
+            ui.btn.style.background = 'white';
+            ui.btn.style.borderColor = 'white';
+        }
     }
+    ui.btn.onclick = toggleChat;
+    ui.backBtn.onclick = toggleChat;
+    ui.closeBtn.onclick = toggleChat;
 
-    // 5. සංවාද පාලනය
-    const btn = document.getElementById('gv-btn');
-    const win = document.getElementById('gv-window');
-    const input = document.getElementById('gv-input');
-    const send = document.getElementById('gv-send');
-    const msgs = document.getElementById('gv-msgs');
+    ui.input.addEventListener('input', () => {
+        ui.send.disabled = !ui.input.value.trim();
+    });
 
-    btn.onclick = () => win.style.display = (win.style.display === 'flex' ? 'none' : 'flex');
+    // --- Demo Restrictions ---
+    function showDemoToast() {
+        ui.toast.classList.add('show');
+        setTimeout(() => ui.toast.classList.remove('show'), 2000);
+    }
+    ui.attachBtn.onclick = showDemoToast;
+    ui.voiceBtn.onclick = showDemoToast;
+
+    function switchToChatMode() {
+        if (hasStartedChat) return;
+        hasStartedChat = true;
+
+        ui.welcome.style.opacity = '0';
+        ui.welcome.style.transform = 'translateY(-20px)';
+
+        setTimeout(() => {
+            ui.welcome.style.display = 'none';
+            ui.header.style.display = 'flex';
+            ui.chatArea.style.display = 'flex';
+            ui.chatArea.style.opacity = '0';
+            setTimeout(() => ui.chatArea.style.opacity = '1', 50);
+        }, 400);
+    }
 
     async function handleSend() {
-        const text = input.value.trim();
+        const text = ui.input.value.trim();
         if (!text) return;
-        addMessage('user', text);
-        input.value = '';
 
-        const response = await fetch(backendUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ client_id: clientId, message: text, session_id: 'sess_123' })
-        });
-        const data = await response.json();
-        addMessage('bot', data.reply);
+        switchToChatMode();
+        addMessage('user', text);
+        ui.input.value = '';
+        ui.send.disabled = true;
+
+        showTyping();
+
+        try {
+            const response = await fetch(backendUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ client_id: clientId, message: text, session_id: 'sess_' + Date.now() })
+            });
+            const data = await response.json();
+            removeTyping();
+            addMessage('bot', data.reply);
+        } catch (e) {
+            removeTyping();
+            // Fallback for demo if backend unreachable
+            addMessage('bot', "Thank you for visiting Amila Bakes! As this is a demo, I can't process complex queries right now, but feel free to browse our menu.");
+        }
     }
+
+    ui.send.onclick = handleSend;
+    ui.input.onkeydown = (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            handleSend();
+        }
+    };
+    // Auto-resize Input
+    ui.input.addEventListener('input', function () {
+        this.style.height = 'auto'; // Reset
+        this.style.height = (this.scrollHeight) + 'px';
+    });
 
     function addMessage(role, text) {
         const div = document.createElement('div');
-        div.className = `gravix-msg ${role}`;
-        
-        // Image parsing logic
+        div.className = `qgent-msg ${role}`;
+
+        // Image parsing: [IMAGE: url] -> <img>
         const imgRegex = /\[IMAGE:\s*(.*?)\]/g;
-        let formatted = text.replace(imgRegex, (m, url) => `<img src="${url}" class="gravix-img" onerror="this.style.display='none'">`);
-        
+        let formatted = text.replace(imgRegex, (m, url) => `<img src="${url}" class="qgent-img">`);
+
+        // Basic Formatting
+        formatted = formatted.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+
         div.innerHTML = formatted.replace(/\n/g, '<br>');
-        msgs.appendChild(div);
-        msgs.scrollTop = msgs.scrollHeight;
+        ui.msgs.appendChild(div);
+        setTimeout(() => ui.msgs.scrollTop = ui.msgs.scrollHeight, 10);
     }
 
-    send.onclick = handleSend;
-    input.onkeypress = (e) => { if(e.key === 'Enter') handleSend(); };
+    let typingEl = null;
+    function showTyping() {
+        if (typingEl) return;
+        typingEl = document.createElement('div');
+        typingEl.className = 'qgent-msg bot';
+        typingEl.innerHTML = '<span style="opacity:0.7; font-size:12px">Thinking...</span>';
+        ui.msgs.appendChild(typingEl);
+        ui.msgs.scrollTop = ui.msgs.scrollHeight;
+    }
 
-    initWidget();
+    function removeTyping() {
+        if (typingEl) { typingEl.remove(); typingEl = null; }
+    }
+
+    // Auto-open logic
+    if (new URLSearchParams(window.location.search).has('open_chat')) {
+        setTimeout(toggleChat, 1000);
+    }
+
 })();
