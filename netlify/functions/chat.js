@@ -5,7 +5,7 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SER
 // Multi-API Failover Logic
 async function callAIWithFailover(messages, plan) {
     const providers = [
-        { name: 'Groq', model: plan === 'Pro' ? 'openai/gpt-oss-120b' : 'openai/gpt-oss-120b', url: 'https://api.groq.com/openai/v1/chat/completions', key: process.env.GROQ_API_KEY },
+        { name: 'Groq', model: 'openai/gpt-oss-120b', url: 'https://api.groq.com/openai/v1/chat/completions', key: process.env.GROQ_API_KEY },
         { name: 'Gemini', model: 'gemini-1.5-pro', url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', key: process.env.GEMINI_API_KEY }
     ];
 
@@ -17,7 +17,7 @@ async function callAIWithFailover(messages, plan) {
                 body: JSON.stringify({ 
                     model: provider.model, 
                     messages, 
-                    temperature: 0.1 // නිර්මාණශීලීත්වය අවම කර දත්ත වලට පමණක් සීමා කිරීමට (Strict Accuracy)
+                    temperature: 0.3 // ස්වභාවික සංවාදයක් සඳහා
                 })
             });
             const data = await response.json();
@@ -48,56 +48,53 @@ export const handler = async (event) => {
     try {
         const { client_id, session_id, message } = JSON.parse(event.body);
 
-        const [configRes, productsRes, usageRes] = await Promise.all([
+        // Fetch Config, Products, Usage, and Conversation History (JSONB Column)
+        const [configRes, productsRes, usageRes, convRes] = await Promise.all([
             supabase.from('bot_configs').select('*, clients(*)').eq('client_id', client_id).single(),
             supabase.from('products').select('*').eq('client_id', client_id),
-            supabase.from('usage_logs').select('chat_count').eq('client_id', client_id).eq('usage_date', new Date().toISOString().split('T')[0]).single()
+            supabase.from('usage_logs').select('chat_count').eq('client_id', client_id).eq('usage_date', new Date().toISOString().split('T')[0]).single(),
+            supabase.from('conversations').select('messages').eq('session_id', session_id).maybeSingle()
         ]);
 
         const config = configRes.data;
         const products = productsRes.data || [];
         const plan = config.clients.plan_type;
         const currentUsage = usageRes.data?.chat_count || 0;
+        
+        // පවතින මතකය ලබා ගැනීම (Array එකක් ලෙස)
+        const chatHistory = convRes.data?.messages || [];
 
         const limits = { 'Lite': 30, 'Standard': 70, 'Pro': 150 };
-        
         if (currentUsage >= (limits[plan] || 30)) {
-            const whatsappMsg = `අපගේ AI සහායකයා දැනට කාර්යබහුලයි. 🕒 කරුණාකර අපගේ නිල WhatsApp අංකය හරහා කෙලින්ම අපව සම්බන්ධ කරගන්න. අපි ඔබට ඉක්මනින් සහාය වන්නෙමු!`;
-            return { statusCode: 200, headers, body: JSON.stringify({ reply: whatsappMsg }) };
+            const waMsg = `අපගේ AI සහායකයා දැනට කාර්යබහුලයි. 🕒 කරුණාකර අපගේ WhatsApp හරහා සම්බන්ධ වන්න.`;
+            return { statusCode: 200, headers, body: JSON.stringify({ reply: waMsg }) };
         }
 
-        const productKB = products.map(p => `● ${p.name}: ${p.description} (Rs. ${p.price}) [IMAGE: ${p.image_url}]`).join('\n');
-        
-        // --- දත්ත වලට පමණක් සීමා වීමට අවශ්‍ය දැඩි උපදෙස් ඇතුළත් System Prompt එක ---
+        const productKB = products.map(p => `● ${p.name}: ${p.description} (Rs. ${p.price})`).join('\n');
+
         const systemPrompt = `
             Identity: You are ${config.bot_name}, a staff member of ${config.clients.business_name}.
             Persona: ${config.system_prompt}
             
-            STRICT RULES:
-            1. ONLY provide information about products listed in the "AVAILABLE PRODUCTS" section below.
-            2. If a user asks for a product NOT in the list (like Vanilla cake, buns, etc., when not listed), you MUST politely state that it is NOT currently available.
-            3. DO NOT invent, hallucinate, or assume the existence of any products or services.
-            4. Use [IMAGE: URL] tag whenever you mention a product from the list.
-            5. If lead info (Name/Phone) is shared, end reply with [LEAD_DATA: Name | Phone | Interest].
-            6. Respond warmly in the user's language (Sinhala/English).
-
-            BUSINESS INFO:
-            ${config.knowledge_base}
-
-            AVAILABLE PRODUCTS: 
-            ${productKB || 'No products are currently listed in the system.'}
+            RULES:
+            1. Warmly welcome if user says "Hi".
+            2. Check chat history before asking for name/phone. If already provided, DON'T ask again.
+            3. Provide info based on: ${config.knowledge_base}
+            4. Available Products: ${productKB}
+            5. If lead info shared, use [LEAD_DATA: Name | Phone | Interest].
         `;
 
-        const { data: history } = await supabase.from('conversations').select('role, content').eq('session_id', session_id).order('created_at', { ascending: false }).limit(4);
-        
+        // AI එකට යවන මැසේජ් ලැයිස්තුව (මතකය ඇතුළුව)
         const messages = [
             { role: "system", content: systemPrompt },
-            ...(history || []).reverse().map(h => ({ role: h.role, content: h.content })),
+            ...chatHistory.slice(-10), // අවසන් මැසේජ් 10 මතකය සඳහා
             { role: "user", content: message }
         ];
 
         const aiReply = await callAIWithFailover(messages, plan);
+        const cleanReply = aiReply.replace(/\[LEAD_DATA: .*?\]/, "").trim();
 
+        // Lead Processing
         if (aiReply.includes("[LEAD_DATA:")) {
             const leadRaw = aiReply.match(/\[LEAD_DATA: (.*?)\]/)?.[1];
             const [name, phone, interest] = leadRaw.split('|').map(s => s.trim());
@@ -105,19 +102,24 @@ export const handler = async (event) => {
             await sendTelegramAlert(config.clients.telegram_chat_id, `🎯 *New Lead!*\n\nName: ${name}\nPhone: ${phone}\nInterest: ${interest}`);
         }
 
+        // --- වැදගත්ම කොටස: JSONB Column එකට History එක Update කිරීම ---
+        const newHistory = [
+            ...chatHistory,
+            { role: "user", content: message },
+            { role: "assistant", content: cleanReply }
+        ];
+
         await Promise.all([
             supabase.rpc('increment_usage', { client_uid: client_id }),
-            supabase.from('conversations').insert([
-                { client_id, session_id, role: 'user', content: message },
-                { client_id, session_id, role: 'assistant', content: aiReply.replace(/\[LEAD_DATA: .*?\]/, "").trim() }
-            ])
+            supabase.from('conversations').upsert({
+                client_id,
+                session_id,
+                messages: newHistory, // මෙතනදී තමයි JSON array එක save වෙන්නේ
+                updated_at: new Date().toISOString()
+            }, { onConflict: 'session_id' }) // session_id එක unique විය යුතුය
         ]);
 
-        return { 
-            statusCode: 200, 
-            headers, 
-            body: JSON.stringify({ reply: aiReply.replace(/\[LEAD_DATA: .*?\]/, "").trim() }) 
-        };
+        return { statusCode: 200, headers, body: JSON.stringify({ reply: cleanReply }) };
 
     } catch (e) {
         console.error(e);
