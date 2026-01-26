@@ -117,7 +117,7 @@ export const handler = async (event) => {
             ${productKB || 'No products are currently listed in the system.'}
         `;
 
-        const { data: history } = await supabase.from('conversations').select('role, content').eq('session_id', session_id).order('created_at', { ascending: false }).limit(4);
+        const { data: history } = await supabase.from('conversations').select('role, content').eq('session_id', session_id).order('created_at', { ascending: false }).limit(20);
 
         const messages = [
             { role: "system", content: systemPrompt },
